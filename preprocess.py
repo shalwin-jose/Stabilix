@@ -10,14 +10,18 @@ import numpy as np
 
 RAW_DIR = "data/raw"
 PROCESSED_DIR = "data/processed"
+EVENTS_FILE = "data/events.csv"
 
 OUTPUT_FILE = os.path.join(
     PROCESSED_DIR,
-    "stabilix_processed_v1.csv"
+    "stabilix_processed_v2.csv"
 )
 
 WINDOW_SECONDS = 10
 STRIDE_SECONDS = 1
+
+# Populated in main() from data/events.csv.
+EVENT_MAP = {}
 
 
 # ============================================================
@@ -120,15 +124,75 @@ def get_workload_label(filename):
     return "Unknown"
 
 
-def is_confirmed_crash_file(filename):
+def load_event_map():
     """
-    The increasingstress recording was confirmed by the user
-    to have ended in a black screen requiring a forced restart.
+    Loads confirmed events from data/events.csv.
+
+    The CSV should contain:
+        Source_File,Event
+
+    Supported events:
+        Application_Crash
+        System_Crash
+
+    Files not listed in events.csv are treated as having no
+    confirmed event.
     """
 
-    name = filename.lower()
+    if not os.path.exists(EVENTS_FILE):
+        print(f"Event file not found: {EVENTS_FILE}")
+        print("Continuing with no confirmed crash events.")
+        return {}
 
-    return "increasingstress" in name
+    try:
+        events_df = pd.read_csv(EVENTS_FILE)
+
+        required_columns = {"Source_File", "Event"}
+        missing = required_columns - set(events_df.columns)
+
+        if missing:
+            print(
+                f"Warning: events.csv is missing columns: {sorted(missing)}"
+            )
+            return {}
+
+        allowed_events = {
+            "Application_Crash",
+            "System_Crash"
+        }
+
+        event_map = {}
+
+        for _, row in events_df.iterrows():
+            source_file = str(row["Source_File"]).strip()
+            event = str(row["Event"]).strip()
+
+            if not source_file or source_file.lower() == "nan":
+                continue
+
+            if event not in allowed_events:
+                print(
+                    f"Warning: ignoring unsupported event '{event}' "
+                    f"for '{source_file}'"
+                )
+                continue
+
+            event_map[source_file] = event
+
+        return event_map
+
+    except Exception as e:
+        print(f"Could not read events file: {e}")
+        return {}
+
+
+def get_event_for_file(filename, event_map):
+    """
+    Returns the confirmed event for a raw CSV file.
+
+    Files absent from events.csv have no confirmed event.
+    """
+    return event_map.get(filename, None)
 
 
 # ============================================================
@@ -515,7 +579,7 @@ def process_file(filepath):
 
     workload_label = get_workload_label(filename)
 
-    confirmed_crash = is_confirmed_crash_file(filename)
+    event = get_event_for_file(filename, EVENT_MAP)
 
     windows = create_windows(df)
 
@@ -534,29 +598,45 @@ def process_file(filepath):
         label = workload_label
 
         # ----------------------------------------------------
-        # Crash labeling
+        # Event-proximity labeling
         # ----------------------------------------------------
         #
-        # For the confirmed crash recording:
-        # final 10 seconds of telemetry are marked
-        # Instability_Imminent.
+        # Only the final ~10 seconds before a CONFIRMED event
+        # receive an event-imminent label.
         #
-        # We do NOT label the entire session.
+        # Application_Crash:
+        #     Application_Crash_Imminent
+        #
+        # System_Crash:
+        #     Instability_Imminent
+        #
+        # Earlier windows retain their normal workload label.
         #
 
-        if confirmed_crash:
+        if event is not None:
 
-            last_sample_time = df["Timestamp"].iloc[-1]
+            if "Timestamp" in df.columns:
 
-            window_end = window["Timestamp"].iloc[-1]
+                last_sample_time = df["Timestamp"].iloc[-1]
+                window_end = window["Timestamp"].iloc[-1]
 
-            seconds_to_end = (
-                last_sample_time - window_end
-            ).total_seconds()
+                seconds_to_end = (
+                    last_sample_time - window_end
+                ).total_seconds()
+
+            else:
+                # Fallback for recordings without timestamps.
+                seconds_to_end = (
+                    total_windows - 1 - index
+                )
 
             if seconds_to_end <= 10:
 
-                label = "Instability_Imminent"
+                if event == "Application_Crash":
+                    label = "Application_Crash_Imminent"
+
+                elif event == "System_Crash":
+                    label = "Instability_Imminent"
 
         # ----------------------------------------------------
         # Metadata
@@ -588,6 +668,9 @@ def process_file(filepath):
             "Label":
                 label,
 
+            "Event":
+                event if event is not None else "None",
+
         }
 
         row.update(features)
@@ -615,9 +698,18 @@ def process_file(filepath):
 
 def main():
 
+    global EVENT_MAP
+
     os.makedirs(
         PROCESSED_DIR,
         exist_ok=True
+    )
+
+    EVENT_MAP = load_event_map()
+
+    print(
+        f"Loaded {len(EVENT_MAP)} confirmed event records "
+        f"from {EVENTS_FILE}."
     )
 
     files = glob.glob(
@@ -659,6 +751,14 @@ def main():
         all_rows
     )
 
+    # Make sure files without a recorded event use the explicit
+    # string "None" instead of pandas NaN.
+    processed_df["Event"] = (
+        processed_df["Event"]
+        .fillna("None")
+        .astype(str)
+    )
+
     # --------------------------------------------------------
     # Final cleanup
     # --------------------------------------------------------
@@ -674,6 +774,7 @@ def main():
             "Window_End",
             "Window_Samples",
             "Label",
+            "Event",
         ]
     ]
 
@@ -712,6 +813,14 @@ def main():
 
     print(
         processed_df["Label"]
+        .value_counts()
+        .to_string()
+    )
+
+    print("\nEvent distribution:")
+
+    print(
+        processed_df["Event"]
         .value_counts()
         .to_string()
     )

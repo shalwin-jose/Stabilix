@@ -61,8 +61,8 @@ class StabilixOverlay(ctk.CTk):
         # Backend
         # ----------------------------------------------------
 
-        self.telemetry = Telemetry()
-        self.window = SlidingWindow()
+        self.telemetry = Telemetry(profile=profile)
+        self.window = SlidingWindow(window_size=10)
         self.predictor = Predictor()
 
         # ----------------------------------------------------
@@ -74,6 +74,10 @@ class StabilixOverlay(ctk.CTk):
         self.drag_start_x = 0
         self.drag_start_y = 0
         self.dragging = False
+
+        # Tracks whether we've already warned about the PDH fallback,
+        # so we nag once per state change instead of every second.
+        self._warned_pdh_fallback = False
 
         # ----------------------------------------------------
         # Window
@@ -169,10 +173,6 @@ class StabilixOverlay(ctk.CTk):
 
     def build_ui(self):
 
-        # ----------------------------------------------------
-        # Main frame
-        # ----------------------------------------------------
-
         self.main_frame = ctk.CTkFrame(
             self,
             fg_color=BG,
@@ -206,10 +206,6 @@ class StabilixOverlay(ctk.CTk):
             expand=True
         )
 
-        # ----------------------------------------------------
-        # Title
-        # ----------------------------------------------------
-
         self.compact_title = ctk.CTkLabel(
             self.compact_frame,
             text="🛡  STABILIX",
@@ -222,10 +218,6 @@ class StabilixOverlay(ctk.CTk):
             padx=(15, 10)
         )
 
-        # ----------------------------------------------------
-        # Status
-        # ----------------------------------------------------
-
         self.compact_status = ctk.CTkLabel(
             self.compact_frame,
             text="● Starting...",
@@ -236,10 +228,6 @@ class StabilixOverlay(ctk.CTk):
         self.compact_status.pack(
             side="left"
         )
-
-        # ----------------------------------------------------
-        # Information
-        # ----------------------------------------------------
 
         self.compact_info = ctk.CTkLabel(
             self.compact_frame,
@@ -305,7 +293,6 @@ class StabilixOverlay(ctk.CTk):
             side="left"
         )
 
-        # Profile badge
         profile_text = (
             "HYBRID"
             if self.profile == "hybrid"
@@ -316,7 +303,11 @@ class StabilixOverlay(ctk.CTk):
             self.header,
             text=profile_text,
             font=("Segoe UI", 10, "bold"),
-            text_color=BLUE if self.profile == "hybrid" else GREEN
+            text_color=(
+                BLUE
+                if self.profile == "hybrid"
+                else GREEN
+            )
         )
 
         self.profile_badge.pack(
@@ -324,7 +315,6 @@ class StabilixOverlay(ctk.CTk):
             padx=10
         )
 
-        # Collapse
         self.collapse_button = ctk.CTkButton(
             self.header,
             text="−",
@@ -341,7 +331,6 @@ class StabilixOverlay(ctk.CTk):
             padx=8
         )
 
-        # Close
         self.close_button = ctk.CTkButton(
             self.header,
             text="×",
@@ -500,7 +489,7 @@ class StabilixOverlay(ctk.CTk):
         )
 
         # ----------------------------------------------------
-        # Live Monitoring Card
+        # Live Monitoring
         # ----------------------------------------------------
 
         self.live_card = ctk.CTkFrame(
@@ -618,7 +607,12 @@ class StabilixOverlay(ctk.CTk):
     # CREATE DETAIL
     # ========================================================
 
-    def create_detail(self, parent, title, value):
+    def create_detail(
+        self,
+        parent,
+        title,
+        value
+    ):
 
         label = ctk.CTkLabel(
             parent,
@@ -643,11 +637,13 @@ class StabilixOverlay(ctk.CTk):
         if self.profile == "hybrid":
 
             return (
-                "Profile: Hybrid • CPU + NVIDIA GPU telemetry"
+                "Profile: Hybrid • "
+                "CPU + NVIDIA GPU telemetry"
             )
 
         return (
-            "Profile: Eco • CPU-focused monitoring"
+            "Profile: Eco • "
+            "CPU-focused monitoring"
         )
 
     # ========================================================
@@ -694,6 +690,7 @@ class StabilixOverlay(ctk.CTk):
 
         if self.expanded:
             self.collapse_view()
+
         else:
             self.expand_view()
 
@@ -780,6 +777,7 @@ class StabilixOverlay(ctk.CTk):
     def bind_drag_handlers(self):
 
         compact_widgets = [
+
             self.compact_frame,
             self.compact_title,
             self.compact_status,
@@ -791,23 +789,29 @@ class StabilixOverlay(ctk.CTk):
             self.bind_drag(widget)
 
         expanded_widgets = [
+
             self.expanded_frame,
             self.header,
             self.header_title,
             self.header_subtitle,
             self.profile_badge,
+
             self.status_card,
             self.status_label,
             self.risk_label,
+
             self.metrics_frame,
+
             self.details_card,
             self.details_title,
             self.details_frame,
+
             self.cpu_temp_label,
             self.gpu_temp_label,
             self.cpu_clock_label,
             self.gpu_clock_label,
             self.battery_label,
+
             self.live_card,
             self.live_title,
             self.live_info,
@@ -836,6 +840,31 @@ class StabilixOverlay(ctk.CTk):
             self.window.add_sample(
                 sample
             )
+
+            # ------------------------------------------------
+            # PDH fallback warning
+            # ------------------------------------------------
+
+            is_fallback = sample.get(
+                "CPU_Performance_Is_Fallback",
+                False
+            )
+
+            if is_fallback and not self._warned_pdh_fallback:
+
+                self._warned_pdh_fallback = True
+
+                print(
+                    "\n[Stabilix] WARNING: predictions are running with "
+                    "CPU_Performance_Percent on the frequency-ratio "
+                    "fallback, not the PDH counter the model was "
+                    "trained on. Treat the workload state/risk shown "
+                    "right now with skepticism.\n"
+                )
+
+            elif not is_fallback:
+
+                self._warned_pdh_fallback = False
 
             # ------------------------------------------------
             # Current values
@@ -903,9 +932,6 @@ class StabilixOverlay(ctk.CTk):
                 text=f"BATTERY\n{battery:.0f}%"
             )
 
-            # Current hybrid telemetry backend doesn't
-            # provide CPU temperature/frequency yet.
-
             self.cpu_temp_label.configure(
                 text="CPU TEMP\n-- °C"
             )
@@ -914,9 +940,9 @@ class StabilixOverlay(ctk.CTk):
                 text="CPU CLOCK\n-- MHz"
             )
 
-            # ------------------------------------------------
-            # Prediction
-            # ------------------------------------------------
+            # =================================================
+            # ML PREDICTION
+            # =================================================
 
             if self.window.is_ready():
 
@@ -930,9 +956,86 @@ class StabilixOverlay(ctk.CTk):
                     )
                 )
 
-                state = prediction["state"]
-                risk = prediction["risk"]
-                confidence = prediction["confidence"]
+                # ------------------------------------------------
+                # IMPORTANT DEBUG
+                # ------------------------------------------------
+
+                raw_label = prediction.get(
+                    "label",
+                    "UNKNOWN"
+                )
+
+                state = prediction.get(
+                    "state",
+                    raw_label
+                )
+
+                risk = prediction.get(
+                    "risk",
+                    0
+                )
+
+                confidence = prediction.get(
+                    "confidence",
+                    0
+                )
+
+                probabilities = prediction.get(
+                    "probabilities",
+                    {}
+                )
+
+                print("\n")
+                print("=" * 70)
+                print("OVERLAY RECEIVED ML RESULT")
+                print("=" * 70)
+
+                print(
+                    f"Raw ML label : {raw_label}"
+                )
+
+                print(
+                    f"Display state: {state}"
+                )
+
+                print(
+                    f"Risk         : {risk}%"
+                )
+
+                print(
+                    f"Confidence   : {confidence}%"
+                )
+
+                print(
+                    f"PDH fallback : {is_fallback}"
+                )
+
+                print(
+                    "\nRaw features fed to the model:"
+                )
+
+                for feature_name, feature_value in features.items():
+
+                    print(
+                        f"  {feature_name:<28} {feature_value:>10.3f}"
+                    )
+
+                print(
+                    "\nClass probabilities:"
+                )
+
+                for label, probability in sorted(
+                    probabilities.items(),
+                    key=lambda item: item[1],
+                    reverse=True
+                ):
+
+                    print(
+                        f"  {label:<32} "
+                        f"{probability:6.2f}%"
+                    )
+
+                print("=" * 70)
 
                 # --------------------------------------------
                 # Risk level
@@ -962,11 +1065,14 @@ class StabilixOverlay(ctk.CTk):
                     text_color=status_color
                 )
 
+                fallback_tag = " ⚠ FALLBACK" if is_fallback else ""
+
                 self.compact_info.configure(
                     text=(
                         f"Risk {risk}%"
                         f"  |  "
                         f"GPU {gpu_temp}°C"
+                        f"{fallback_tag}"
                     )
                 )
 
@@ -983,11 +1089,18 @@ class StabilixOverlay(ctk.CTk):
                     text=f"Risk: {risk}%"
                 )
 
-                self.confidence_label.configure(
-                    text=(
-                        f"Prediction confidence: "
-                        f"{confidence}%"
+                confidence_text = (
+                    f"Prediction confidence: {confidence}%"
+                )
+
+                if is_fallback:
+                    confidence_text += (
+                        "  •  ⚠ CPU_Performance on fallback "
+                        "(predictions may be unreliable)"
                     )
+
+                self.confidence_label.configure(
+                    text=confidence_text
                 )
 
                 self.live_info.configure(
@@ -1048,6 +1161,16 @@ class StabilixOverlay(ctk.CTk):
             # Error state
             # ------------------------------------------------
 
+            print("\n" + "=" * 60)
+            print("STABILIX UPDATE ERROR")
+            print("=" * 60)
+
+            import traceback
+
+            traceback.print_exc()
+
+            print("=" * 60 + "\n")
+
             self.compact_status.configure(
                 text="⚠ Error",
                 text_color=RED
@@ -1072,11 +1195,6 @@ class StabilixOverlay(ctk.CTk):
 
             self.live_info.configure(
                 text=str(e)
-            )
-
-            print(
-                "Telemetry error:",
-                e
             )
 
         # ----------------------------------------------------
