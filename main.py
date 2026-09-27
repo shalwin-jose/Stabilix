@@ -1,4 +1,4 @@
-from setup_ui import SetupWindow
+from setup_lhm import SetupWindow
 
 
 if __name__ == "__main__":

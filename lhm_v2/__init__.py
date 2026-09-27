@@ -1,0 +1,1 @@
+"""Stabilix LibreHardwareMonitor pipeline package."""
